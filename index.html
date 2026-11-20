@@ -143,6 +143,7 @@ function buildConfig() {
   const titolo  = pVal('titolo', 'title', 't');
   const scritturaDiretta = pFlag('direct', 'scritturaDiretta', 'w');
   const fullscreen = pFlag('fs', 'fullscreen');
+  const exitUrl = pVal('exit', 'uscita') || 'about:blank';
 
   if (!fileHtml) {
     return {
@@ -175,7 +176,8 @@ function buildConfig() {
       dbAlternativo,
       percorsoPlain: pathPlain,
       scritturaDiretta,
-      fullscreen
+      fullscreen,
+      exitUrl
     },
     err: null
   };
@@ -258,24 +260,171 @@ async function trovaDatabaseAlternativo(codeDirHandle) {
   return null;
 }
 
-/** Attiva lo schermo intero se richiesto con &fs=1 nello shortcut (con fallback al 1° clic se il popup di Edge interrompe il gesto). */
+/* ==================== GESTIONE SCHERMO INTERO E USCITA PULITA ==================== */
+let entratoInFullscreen = false;
+let pausaUscitaFs = false;
+let chiusuraInCorso = false;
+
+function sospendiUscitaFs() {
+  pausaUscitaFs = true;
+  setTimeout(() => { pausaUscitaFs = false; }, 3000);
+}
+
+function chiudiApplicativo() {
+  if (chiusuraInCorso) return;
+  chiusuraInCorso = true;
+
+  try { sessionStorage.removeItem('__BOOT_PARAMS__'); } catch (_) {}
+  try {
+    if (navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock();
+  } catch (_) {}
+  try {
+    if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+  } catch (_) {}
+  try {
+    document.documentElement.style.background = '#0f172a';
+    if (document.body) document.body.innerHTML = '';
+  } catch (_) {}
+
+  // 1. Tenta chiusura fisica della scheda
+  try { window.open('', '_self'); window.close(); } catch (_) {}
+  try { window.close(); } catch (_) {}
+
+  // 2. Fallback immediato (60ms) per schede aperte da .url: elimina l'URL di GitHub
+  setTimeout(() => {
+    window.location.replace(CFG.exitUrl || 'about:blank');
+  }, 60);
+}
+
+function richiediFullscreen() {
+  const el = document.documentElement;
+  if (!document.fullscreenElement && el && el.requestFullscreen) {
+    return el.requestFullscreen().then(() => {
+      if (navigator.keyboard && navigator.keyboard.lock) {
+        navigator.keyboard.lock(['Escape']).catch(() => {});
+      }
+    });
+  }
+  return Promise.resolve();
+}
+
+function iniettaBottoneEsci() {
+  if (chiusuraInCorso || !document.body) return;
+
+  if (document.head && !document.getElementById('__bl_exit_style__')) {
+    const st = document.createElement('style');
+    st.id = '__bl_exit_style__';
+    st.textContent = '@media print { #__bl_exit_btn__ { display: none !important; } }';
+    document.head.appendChild(st);
+  }
+
+  if (document.getElementById('__bl_exit_btn__')) return;
+  const btn = document.createElement('button');
+  btn.id = '__bl_exit_btn__';
+  btn.type = 'button';
+  btn.textContent = '✕ Esci';
+  btn.title = 'Chiudi applicativo';
+  btn.style.cssText = [
+    'position:fixed', 'top:0', 'right:0', 'z-index:2147483647',
+    'background:rgba(15,23,42,0.6)', 'color:#e2e8f0',
+    'border:none', 'border-bottom-left-radius:8px',
+    'padding:5px 12px', 'font:600 11.5px/1.2 system-ui,sans-serif',
+    'cursor:pointer', 'backdrop-filter:blur(4px)',
+    'transition:background .15s,opacity .15s', 'opacity:0.55'
+  ].join(';');
+  btn.onmouseenter = () => { btn.style.background = '#dc2626'; btn.style.color = '#fff'; btn.style.opacity = '1'; };
+  btn.onmouseleave = () => { btn.style.background = 'rgba(15,23,42,0.6)'; btn.style.color = '#e2e8f0'; btn.style.opacity = '0.55'; };
+  btn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    chiudiApplicativo();
+  };
+  document.body.appendChild(btn);
+}
+
 function attivaFullscreen() {
   if (!CFG || !CFG.fullscreen) return;
-  const richiedi = () => {
-    const el = document.documentElement;
-    if (!document.fullscreenElement && el && el.requestFullscreen) {
-      return el.requestFullscreen();
+
+  // Intercetta stampe, finestre file e download per non chiudere l'app quando Edge esce dal fullscreen
+  if (typeof window.print === 'function') {
+    const origPrint = window.print;
+    window.print = function(...args) {
+      sospendiUscitaFs();
+      return origPrint.apply(this, args);
+    };
+  }
+  for (const fnName of ['showOpenFilePicker', 'showSaveFilePicker', 'showDirectoryPicker']) {
+    if (typeof window[fnName] === 'function') {
+      const origFn = window[fnName];
+      window[fnName] = function(...args) {
+        sospendiUscitaFs();
+        return origFn.apply(this, args);
+      };
     }
-    return Promise.resolve();
+  }
+  if (typeof window.open === 'function') {
+    const origOpen = window.open;
+    window.open = function(...args) {
+      if (args[0] !== '') sospendiUscitaFs();
+      return origOpen.apply(this, args);
+    };
+  }
+  const origInputClick = HTMLInputElement.prototype.click;
+  HTMLInputElement.prototype.click = function(...args) {
+    if (this.type === 'file') sospendiUscitaFs();
+    return origInputClick.apply(this, args);
   };
+  const origAnchorClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function(...args) {
+    if (this.hasAttribute('download')) sospendiUscitaFs();
+    return origAnchorClick.apply(this, args);
+  };
+  window.addEventListener('keydown', (e) => {
+    const k = (e.key || '').toLowerCase();
+    if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (k === 'r' || k === 'p'))) {
+      sospendiUscitaFs();
+    }
+  }, true);
+
+  // Aggiunge il pulsante ✕ Esci e lo mantiene se l'app riscrive il body
+  iniettaBottoneEsci();
+  if (document.body) {
+    const obs = new MutationObserver(() => iniettaBottoneEsci());
+    obs.observe(document.body, { childList: true });
+  }
+
+  // Intercetta l'uscita con la X in alto di Edge
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement) {
+      entratoInFullscreen = true;
+      pausaUscitaFs = false;
+    } else if (entratoInFullscreen) {
+      if (pausaUscitaFs) {
+        entratoInFullscreen = false;
+        pausaUscitaFs = false;
+        window.addEventListener('click', () => {
+          if (!chiusuraInCorso) richiediFullscreen().catch(() => {});
+        }, { once: true, capture: true });
+      } else {
+        chiudiApplicativo();
+      }
+    }
+  });
+
+  // Avvia lo schermo intero (con fallback al 1° clic se il popup di Edge interrompe il gesto)
   try {
-    Promise.resolve(richiedi()).catch(() => {
+    Promise.resolve(richiediFullscreen()).catch(() => {
       window.addEventListener('click', () => {
-        try { Promise.resolve(richiedi()).catch(() => {}); } catch (_) {}
+        if (!chiusuraInCorso) {
+          try { Promise.resolve(richiediFullscreen()).catch(() => {}); } catch (_) {}
+        }
       }, { once: true, capture: true });
     });
   } catch (_) {}
 }
+/* ================================================================================= */
 
 async function startApp(codeDirHandle) {
   try {
