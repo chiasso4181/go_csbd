@@ -69,15 +69,27 @@ const logEl   = document.getElementById('log');
 
 function logErr(msg) { logEl.textContent += msg + '\n'; }
 
-/** Legge parametri sia da ?query che da #hash (consigliato per non inviare path in rete). */
+/** Legge i parametri da ? o #, li salva per il tasto F5 e ripulisce subito la barra indirizzi. */
 function getMergedParams() {
-  const merged = new URLSearchParams(location.search ? location.search.slice(1) : '');
-  const rawHash = location.hash ? location.hash.slice(1) : '';
-  if (rawHash.includes('=')) {
-    const hs = new URLSearchParams(rawHash);
-    for (const [k, v] of hs.entries()) merged.set(k, v);
+  const hasUrlParams = (location.search && location.search.length > 1) ||
+                       (location.hash && location.hash.includes('='));
+
+  if (hasUrlParams) {
+    const merged = new URLSearchParams(location.search ? location.search.slice(1) : '');
+    const rawHash = location.hash ? location.hash.slice(1) : '';
+    if (rawHash.includes('=')) {
+      const hs = new URLSearchParams(rawHash);
+      for (const [k, v] of hs.entries()) merged.set(k, v);
+    }
+    try {
+      sessionStorage.setItem('__BOOT_PARAMS__', merged.toString());
+      history.replaceState(null, '', location.pathname);
+    } catch (_) {}
+    return merged;
   }
-  return merged;
+
+  const saved = sessionStorage.getItem('__BOOT_PARAMS__') || '';
+  return new URLSearchParams(saved);
 }
 
 const params = getMergedParams();
