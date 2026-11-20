@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Avvio Applicativo</title>
+  <title>Avvio Applicativo Locale</title>
   <style>
     body {
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
@@ -30,8 +30,12 @@
       font-size: 13px; color: #94a3b8; margin-top: 14px;
       line-height: 1.5; white-space: pre-line;
     }
+    .privacy-badge {
+      margin-top: 20px; padding-top: 14px; border-top: 1px solid #334155;
+      font-size: 11.5px; color: #64748b; line-height: 1.4;
+    }
     .reset-link {
-      display: inline-block; margin-top: 16px; font-size: 12px;
+      display: inline-block; margin-top: 12px; font-size: 12px;
       color: #64748b; cursor: pointer; text-decoration: underline;
     }
     #log {
@@ -48,6 +52,10 @@
   <div class="hint" id="ui-hint"></div>
   <div id="log"></div>
   <span class="reset-link" id="btn-reset" style="display:none;">⚙️ Riconfigura cartella</span>
+  <div class="privacy-badge">
+    🔒 <strong>Esecuzione 100% locale</strong>: questa pagina funge solo da ponte di avvio.<br>
+    Applicativi e database restano esclusivamente sul disco di rete interno.
+  </div>
 </div>
 
 <script>
@@ -61,35 +69,41 @@ window.onerror = function(msg, url, line) {
 const DB_NAME = 'DualPathBootloaderDB';
 const STORE_NAME = 'handles';
 
-const uiTitle = document.getElementById('ui-title');
-const uiHint  = document.getElementById('ui-hint');
-const btnMain = document.getElementById('btn-main');
+const uiTitle  = document.getElementById('ui-title');
+const uiHint   = document.getElementById('ui-hint');
+const btnMain  = document.getElementById('btn-main');
 const btnReset = document.getElementById('btn-reset');
-const logEl   = document.getElementById('log');
+const logEl    = document.getElementById('log');
 
 function logErr(msg) { logEl.textContent += msg + '\n'; }
 
-/** Legge i parametri da ? o #, li salva per il tasto F5 e ripulisce subito la barra indirizzi. */
+/** Legge i parametri da ? o #, li salva nella scheda corrente e pulisce subito la barra indirizzi. */
 function getMergedParams() {
-  const hasUrlParams = (location.search && location.search.length > 1) ||
-                       (location.hash && location.hash.includes('='));
+  const hasSearch = location.search && location.search.length > 1;
+  const hasHash   = location.hash && location.hash.includes('=');
 
-  if (hasUrlParams) {
-    const merged = new URLSearchParams(location.search ? location.search.slice(1) : '');
-    const rawHash = location.hash ? location.hash.slice(1) : '';
-    if (rawHash.includes('=')) {
-      const hs = new URLSearchParams(rawHash);
+  if (hasSearch || hasHash) {
+    const merged = new URLSearchParams(hasSearch ? location.search.slice(1) : '');
+    if (hasHash) {
+      const hs = new URLSearchParams(location.hash.slice(1));
       for (const [k, v] of hs.entries()) merged.set(k, v);
     }
     try {
       sessionStorage.setItem('__BOOT_PARAMS__', merged.toString());
-      history.replaceState(null, '', location.pathname);
+      const cleanUrl = merged.get('user')
+        ? location.pathname + '?user=' + encodeURIComponent(merged.get('user'))
+        : location.pathname;
+      history.replaceState(null, '', cleanUrl);
     } catch (_) {}
     return merged;
   }
 
-  const saved = sessionStorage.getItem('__BOOT_PARAMS__') || '';
-  return new URLSearchParams(saved);
+  try {
+    const saved = sessionStorage.getItem('__BOOT_PARAMS__');
+    if (saved) return new URLSearchParams(saved);
+  } catch (_) {}
+
+  return new URLSearchParams();
 }
 
 const params = getMergedParams();
@@ -107,7 +121,6 @@ function pFlag(...keys) {
   return v === '1' || v === 'true' || v === 'yes' || v === 'si';
 }
 
-/** Normalizza percorsi UNC e di rete (accetta sia / che \). */
 function normalizzaPercorso(p) {
   if (!p) return '';
   let s = p.trim().replace(/\//g, '\\');
@@ -129,12 +142,13 @@ function buildConfig() {
   const dbRegexStr = pVal('db_regex', 'dr');
   const titolo  = pVal('titolo', 'title', 't');
   const scritturaDiretta = pFlag('direct', 'scritturaDiretta', 'w');
+  const fullscreen = pFlag('fs', 'fullscreen');
 
   if (!fileHtml) {
     return {
       appKey: '',
       CFG: null,
-      err: 'Nessun file specificato nello shortcut.\n\nEsempio parametri da aggiungere all\'URL:\n#a=mia_app&h=app.html&d=dati.json&p=//server/condivisione/cartella&t=Mia%20App'
+      err: 'Apri l\'applicativo tramite il relativo collegamento (.url) presente nella cartella di rete.'
     };
   }
 
@@ -160,7 +174,8 @@ function buildConfig() {
       dbCandidati,
       dbAlternativo,
       percorsoPlain: pathPlain,
-      scritturaDiretta
+      scritturaDiretta,
+      fullscreen
     },
     err: null
   };
@@ -169,13 +184,14 @@ function buildConfig() {
 const { appKey, CFG, err: cfgErr } = buildConfig();
 
 if (cfgErr || !CFG) {
-  uiTitle.textContent = '⚙️ Parametri mancanti';
+  uiTitle.textContent = 'ℹ️ Collegamento richiesto';
   btnMain.style.display = 'none';
-  logErr(cfgErr || 'Configurazione non valida.');
-  throw new Error('Parametri shortcut mancanti');
+  uiHint.textContent = cfgErr;
+  throw new Error('Avvio diretto senza shortcut');
 }
 
 uiTitle.textContent = '🚀 ' + CFG.titolo;
+document.title = CFG.titolo;
 
 function openIDB() {
   return new Promise((res, rej) => {
@@ -242,6 +258,25 @@ async function trovaDatabaseAlternativo(codeDirHandle) {
   return null;
 }
 
+/** Attiva lo schermo intero se richiesto con &fs=1 nello shortcut (con fallback al 1° clic se il popup di Edge interrompe il gesto). */
+function attivaFullscreen() {
+  if (!CFG || !CFG.fullscreen) return;
+  const richiedi = () => {
+    const el = document.documentElement;
+    if (!document.fullscreenElement && el && el.requestFullscreen) {
+      return el.requestFullscreen();
+    }
+    return Promise.resolve();
+  };
+  try {
+    Promise.resolve(richiedi()).catch(() => {
+      window.addEventListener('click', () => {
+        try { Promise.resolve(richiedi()).catch(() => {}); } catch (_) {}
+      }, { once: true, capture: true });
+    });
+  } catch (_) {}
+}
+
 async function startApp(codeDirHandle) {
   try {
     logEl.textContent = '';
@@ -261,9 +296,9 @@ async function startApp(codeDirHandle) {
     }
     if (!dbHandle) dbHandle = await trovaDatabaseAlternativo(codeDirHandle);
 
-    // Variabili globali standard ed alias retrocompatibili per tutti gli applicativi
     window.__BOOTLOADER_DIR_HANDLE__ = codeDirHandle;
     window.__BOOTLOADER_DB_HANDLE__  = dbHandle;
+    window.__BOOTLOADER_PARAMS__     = Object.fromEntries(params.entries());
     window.BOOTLOADER_ACTIVE         = true;
     window.bootloaderDirHandle       = codeDirHandle;
     window.bootloaderFileHandle      = dbHandle;
@@ -275,7 +310,7 @@ async function startApp(codeDirHandle) {
     } catch (e) {
       if (e && e.name === 'NotFoundError') {
         logErr('❌ «' + CFG.fileHtml + '» non trovato nella cartella collegata (' + (codeDirHandle.name || '?') + ').\n' +
-               'Verifica il parametro nello shortcut oppure clicca «Riconfigura cartella».');
+               'Verifica lo shortcut oppure clicca «Riconfigura cartella».');
         return;
       }
       throw e;
@@ -285,6 +320,7 @@ async function startApp(codeDirHandle) {
       document.open();
       document.write(rawHtml);
       document.close();
+      attivaFullscreen();
       return;
     }
 
@@ -362,6 +398,7 @@ async function startApp(codeDirHandle) {
 
     document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true }));
     window.dispatchEvent(new Event('load'));
+    attivaFullscreen();
 
   } catch (err) {
     logErr('❌ Errore durante l\'avvio: ' + err.message);
