@@ -84,6 +84,37 @@ function logErr(msg) {
   logEl.textContent += msg + '\n';
 }
 
+/* ==== App installabile (solo per i collegamenti con pwa=1) ====
+   Genera un manifest con start_url = indirizzo completo (parametri inclusi). Così l'app installata da Edge si riapre sempre
+   con i parametri giusti, senza dipendere da dati memorizzati, e ogni applicativo ha la propria app indipendente. */
+function preparaManifestPwa(p) {
+  try {
+    const base = location.origin + location.pathname;
+    const nome = p.get('titolo') || p.get('title') || p.get('t') || 'Applicativo';
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#0b3d5c"/><text x="32" y="43" font-size="30" font-family="Arial" font-weight="700" text-anchor="middle" fill="#fff">W</text></svg>';
+    const manifest = {
+      name: nome, short_name: nome.length > 24 ? nome.slice(0, 23) + '…' : nome,
+      id: base + '?app=' + encodeURIComponent(p.get('html') || p.get('file') || p.get('h') || 'app'),
+      start_url: base + '#' + p.toString(),
+      scope: base.replace(/[^/]*$/, ''),
+      display: 'standalone', background_color: '#0f172a', theme_color: '#0b3d5c',
+      icons: [{ src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg), sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]
+    };
+    window.__PWA_MANIFEST_URL__ = URL.createObjectURL(new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' }));
+    assicuraManifestPwa();
+  } catch (_) {}
+}
+
+/** Il link al manifest va (ri)messo anche dopo che l'applicativo ha sostituito il contenuto della pagina. */
+function assicuraManifestPwa() {
+  try {
+    if (!window.__PWA_MANIFEST_URL__ || !document.head) return;
+    let l = document.querySelector('link[rel="manifest"]');
+    if (!l) { l = document.createElement('link'); l.rel = 'manifest'; document.head.appendChild(l); }
+    l.href = window.__PWA_MANIFEST_URL__;
+  } catch (_) {}
+}
+
 /** Legge i parametri da ? o #, li salva nella scheda corrente e pulisce subito la barra indirizzi. */
 function getMergedParams() {
   const hasSearch = location.search && location.search.length > 1;
@@ -98,7 +129,10 @@ function getMergedParams() {
     try {
       sessionStorage.setItem('__BOOT_PARAMS__', merged.toString());
       // Solo per i collegamenti che lo richiedono (pwa=1): ricorda l'ultimo avvio, per riaprire l'app installata da Edge
-      if (/^(1|true|yes|si)$/i.test(merged.get('pwa') || '')) localStorage.setItem('__BOOT_PARAMS_PWA__', merged.toString());
+      if (/^(1|true|yes|si)$/i.test(merged.get('pwa') || '')) {
+        localStorage.setItem('__BOOT_PARAMS_PWA__', merged.toString());
+        preparaManifestPwa(merged);   // «Installa come app» ricorderà l'indirizzo COMPLETO (con i parametri), non quello ripulito
+      }
       const cleanUrl = merged.get('user')
         ? location.pathname + '?user=' + encodeURIComponent(merged.get('user'))
         : location.pathname;
@@ -496,6 +530,7 @@ async function startApp(codeDirHandle, giaAutorizzato = false) {
       document.open();
       document.write(rawHtml);
       document.close();
+      assicuraManifestPwa();
       attivaFullscreen();
       return true;
     }
@@ -574,6 +609,7 @@ async function startApp(codeDirHandle, giaAutorizzato = false) {
 
     document.dispatchEvent(new Event('DOMContentLoaded', { bubbles: true }));
     window.dispatchEvent(new Event('load'));
+    assicuraManifestPwa();
     attivaFullscreen();
     return true;
 
