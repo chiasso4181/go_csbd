@@ -97,6 +97,8 @@ function getMergedParams() {
     }
     try {
       sessionStorage.setItem('__BOOT_PARAMS__', merged.toString());
+      // Solo per i collegamenti che lo richiedono (pwa=1): ricorda l'ultimo avvio, per riaprire l'app installata da Edge
+      if (/^(1|true|yes|si)$/i.test(merged.get('pwa') || '')) localStorage.setItem('__BOOT_PARAMS_PWA__', merged.toString());
       const cleanUrl = merged.get('user')
         ? location.pathname + '?user=' + encodeURIComponent(merged.get('user'))
         : location.pathname;
@@ -108,6 +110,14 @@ function getMergedParams() {
   try {
     const saved = sessionStorage.getItem('__BOOT_PARAMS__');
     if (saved) return new URLSearchParams(saved);
+  } catch (_) {}
+
+  // App installata da Edge (finestra «standalone») aperta senza parametri: riusa l'ultimo avvio con pwa=1
+  try {
+    if (window.matchMedia('(display-mode: standalone)').matches || window.matchMedia('(display-mode: minimal-ui)').matches) {
+      const ultimo = localStorage.getItem('__BOOT_PARAMS_PWA__');
+      if (ultimo) return new URLSearchParams(ultimo);
+    }
   } catch (_) {}
 
   return new URLSearchParams();
