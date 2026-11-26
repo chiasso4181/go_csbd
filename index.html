@@ -114,7 +114,7 @@ function getMergedParams() {
 
   // App installata da Edge (finestra «standalone») aperta senza parametri: riusa l'ultimo avvio con pwa=1
   try {
-    if (window.matchMedia('(display-mode: standalone)').matches || window.matchMedia('(display-mode: minimal-ui)').matches) {
+    if (!window.matchMedia('(display-mode: browser)').matches || navigator.standalone) {   // finestra app (standalone, minimal-ui, overlay…), cioè NON una normale scheda
       const ultimo = localStorage.getItem('__BOOT_PARAMS_PWA__');
       if (ultimo) return new URLSearchParams(ultimo);
     }
@@ -207,6 +207,10 @@ if (cfgErr || !CFG) {
   uiTitle.textContent = 'ℹ️ Collegamento richiesto';
   btnMain.style.display = 'none';
   uiHint.textContent = cfgErr;
+  try {   // diagnosi (utile se l'app installata non riparte): modalità finestra e parametri memorizzati
+    const modi = ['browser', 'standalone', 'minimal-ui', 'window-controls-overlay', 'fullscreen'].filter(m => window.matchMedia('(display-mode: ' + m + ')').matches);
+    uiHint.textContent += '\n[diagnosi: finestra=' + (modi.join(',') || '?') + ' · avvio memorizzato=' + (localStorage.getItem('__BOOT_PARAMS_PWA__') ? 'sì' : 'NO') + ']';
+  } catch (_) {}
   throw new Error('Avvio diretto senza shortcut');
 }
 
